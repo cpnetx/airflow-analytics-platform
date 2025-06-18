@@ -1,6 +1,8 @@
 # Process Report dependencies
 influxdb-client>=1.36.0
 clickhouse-driver>=0.2.5
+clickhouse-connect>=0.6.0
+sqlalchemy-clickhouse>=0.1.5
 scipy>=1.10.0
 pyyaml>=6.0
 azure-storage-blob>=12.14.0
