@@ -1,0 +1,32 @@
+# Custom Airflow values for cloud deployment with custom image
+# This extends the base values in /Users/bichengchen/codes/infra-one/airflow/helm/airflow-values.yaml
+
+# Update to use your custom image
+images:
+  airflow:
+    repository: <ACR_NAME>.azurecr.io/airflow-custom  # Replace <ACR_NAME> with your ACR
+    tag: "3.0.2"
+    pullPolicy: Always
+    
+# Add image pull secrets if your ACR requires authentication
+# imagePullSecrets:
+#   - name: acr-secret
+
+# Since DAGs are baked into the image, we don't need gitSync
+dags:
+  gitSync:
+    enabled: false
+    
+# Optional: Add extra environment variables for DAGs
+# These can reference Kubernetes secrets
+extraEnvFrom: |
+  - secretRef:
+      name: airflow-variables  # Create this secret with all your variables
+
+# Optional: Configure email settings for notifications
+config:
+  email:
+    email_backend: airflow.providers.sendgrid.utils.emailer.send_email
+    email_conn_id: sendgrid_default
+    default_email_on_retry: true
+    default_email_on_failure: true

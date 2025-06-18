@@ -1,0 +1,16 @@
+FROM apache/airflow:3.0.2-python3.12
+
+# Copy requirements first for better caching
+COPY requirements.txt /
+RUN pip install --no-cache-dir \
+    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.0.2/constraints-3.10.txt" \
+    -r /requirements.txt
+
+# Copy DAGs and configurations
+COPY --chown=airflow:root dags/ /opt/airflow/dags/
+
+# Note: We'll handle sensitive configs (globals.yml) via Airflow Variables instead
+# Only copy non-sensitive config files if needed
+# COPY --chown=airflow:root config/ /opt/airflow/config/
+
+USER airflow
