@@ -111,7 +111,6 @@ dmypy.json
 
 # Airflow specific
 airflow.db
-airflow.cfg
 unittests.cfg
 airflow_login.py
 dbinit.py

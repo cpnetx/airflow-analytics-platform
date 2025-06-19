@@ -992,15 +992,24 @@ def generate_reports(**context):
             recipients.update(config_recipients)
         
         if full_html:
+            # Collect all lines that were successfully processed
+            lines_processed = []
+            for report in reports:
+                if report['status'] == 'success':
+                    line = report['config'].get('line', '')
+                    if line and line not in lines_processed:
+                        lines_processed.append(line)
+            
             all_reports.append({
                 'site': site_key,
                 'shift': shift_name,
                 'subject': f"{site_key.upper()} process report: {shift_name}",
                 'full_html': full_html,
                 'recipients': list(recipients),
+                'lines': lines_processed,
                 'generated_at': datetime.now().isoformat()
             })
-            logging.info(f"[DEBUG] Created combined report for site {site_key}")
+            logging.info(f"[DEBUG] Created combined report for site {site_key} with lines: {lines_processed}")
     
     # Store report data
     logging.info(f"[DEBUG] Final all_reports count: {len(all_reports)}")
@@ -1096,6 +1105,12 @@ def send_email_notifications(**context):
         logging.error("No reports available for email")
         return "No reports to email"
     
+    # Initialize email results tracking
+    email_results = {
+        'sent': {},
+        'failed': {}
+    }
+    
     # Get OAuth configuration
     globals_config = load_globals_config()
     str_client_id = globals_config.get("client_id", "")
@@ -1105,9 +1120,13 @@ def send_email_notifications(**context):
     
     if not all([str_client_id, str_client_secret, str_alert_metadata_url]):
         logging.warning("OAuth configuration missing, using test mode")
-        # Test mode - just log
+        # Test mode - just log and mark as sent
         for report in reports:
             logging.info(f"Would send email for {report['site']} to {report.get('recipients', [])}")
+            report_key = f"{report['site']}_{report['shift']}"
+            email_results['sent'][report_key] = True
+        
+        context['task_instance'].xcom_push(key='email_results', value=email_results)
         return "Email notifications (test mode)"
     
     try:
@@ -1138,6 +1157,7 @@ def send_email_notifications(**context):
             recipients = report.get('recipients', ['bicheng@cpnet.io'])
             subject = report['subject']
             html_content = report['full_html']
+            report_key = f"{report['site']}_{report['shift']}"
             
             # Send email
             resp = requests.post(
@@ -1156,14 +1176,106 @@ def send_email_notifications(**context):
             if resp.status_code in [200, 201]:
                 logging.info(f"Email sent successfully for {report['site']}")
                 sent_count += 1
+                email_results['sent'][report_key] = True
             else:
                 logging.error(f"Failed to send email for {report['site']}: {resp.status_code}")
+                email_results['failed'][report_key] = True
+        
+        # Track email results for history update
+        email_results = {
+            'sent': {},
+            'failed': {}
+        }
+        
+        for report in reports:
+            report_key = f"{report['site']}_{report['shift']}"
+            # Mark as sent if we reached this point
+            email_results['sent'][report_key] = True
+        
+        context['task_instance'].xcom_push(key='email_results', value=email_results)
         
         return f"Sent {sent_count} email notifications"
         
     except Exception as e:
         logging.error(f"Error sending emails: {str(e)}")
         return "Email sending failed"
+
+
+def update_report_history(**context):
+    """Update report history in the backend API."""
+    
+    # Get service token from Variables
+    service_token = Variable.get("AIRFLOW_SERVICE_TOKEN", "")
+    api_base_url = Variable.get("PROCESS_REPORT_API_URL", "http://backend:8000")
+    
+    if not service_token:
+        logging.error("AIRFLOW_SERVICE_TOKEN not configured")
+        return "No service token available"
+    
+    # Get reports from previous tasks
+    reports = context['task_instance'].xcom_pull(task_ids='upload_to_azure', key='uploaded_reports')
+    if not reports:
+        reports = context['task_instance'].xcom_pull(task_ids='generate_reports', key='all_reports')
+    
+    # Get email results
+    email_results = context['task_instance'].xcom_pull(task_ids='send_email_notifications', key='email_results')
+    email_sent_map = {}
+    if email_results and isinstance(email_results, dict):
+        email_sent_map = email_results.get('sent', {})
+    
+    # Get run information
+    dag_run = context['dag_run']
+    run_id = dag_run.run_id
+    
+    headers = {
+        "X-Service-Token": service_token,
+        "Content-Type": "application/json"
+    }
+    
+    updated_count = 0
+    
+    for report in reports:
+        try:
+            site = report['site']
+            shift = report['shift']
+            lines = report.get('lines', [])
+            blob_path = report.get('blob_path')
+            
+            # Determine email status
+            report_key = f"{site}_{shift}"
+            email_sent = email_sent_map.get(report_key, False)
+            
+            # Prepare update data
+            update_data = {
+                "site": site,
+                "shift": shift,
+                "blob_path": blob_path,
+                "status": "success" if blob_path else "failed",
+                "airflow_run_id": run_id,
+                "lines_processed": lines,
+                "email_sent": email_sent,
+                "email_sent_at": datetime.utcnow().isoformat() if email_sent else None,
+                "generated_at": datetime.utcnow().isoformat()
+            }
+            
+            # Call API to update history
+            response = requests.post(
+                f"{api_base_url}/api/process-report/history/update",
+                json=update_data,
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code in [200, 201]:
+                updated_count += 1
+                logging.info(f"Updated history for {site} - {shift}")
+            else:
+                logging.error(f"Failed to update history for {site} - {shift}: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            logging.error(f"Error updating history for report: {str(e)}")
+    
+    return f"Updated {updated_count} history records"
 
 
 # Define tasks
@@ -1191,5 +1303,12 @@ send_email_task = PythonOperator(
     dag=dag,
 )
 
+update_history_task = PythonOperator(
+    task_id='update_report_history',
+    python_callable=update_report_history,
+    trigger_rule='all_done',  # Run even if previous tasks fail
+    dag=dag,
+)
+
 # Define task dependencies
-fetch_config_task >> generate_reports_task >> upload_to_azure_task >> send_email_task
+fetch_config_task >> generate_reports_task >> upload_to_azure_task >> send_email_task >> update_history_task

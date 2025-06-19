@@ -6,9 +6,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Apache Airflow 3.0.2 analytics platform for industrial process monitoring and reporting. Generates automated reports for manufacturing lines, tracking temperature controls and mechanical settings.
 
+## Memories
+
+- Always ask for airflow kubeconfig file if you could not find it in local claude memory.
+- When asked to reserialize DAGs, use the standard Airflow command to reserialize: `airflow dags reserialize`
+
+## Testing Environments
+
+When testing Airflow, specify which environment to use:
+- **Local testing**: Use Docker Compose (default)
+- **K8s testing**: Use Kubernetes deployment
+
+### Local Testing (Docker Compose)
+For local development and testing, use the Docker Compose setup described below.
+
+### Kubernetes Testing
+When instructed to test on K8s, use the following:
+```bash
+# Deploy to K8s cluster
+kubectl apply -f k8s/
+
+# Check pod status
+kubectl get pods -n airflow
+
+# Access logs
+kubectl logs -f deployment/airflow-scheduler -n airflow
+
+# Port forward for UI access
+kubectl port-forward svc/airflow-webserver 8080:8080 -n airflow
+
+# Execute commands in pods
+kubectl exec -it deployment/airflow-scheduler -n airflow -- airflow dags list
+```
+
 ## Key Commands
 
-### Docker Operations
+### Docker Operations (Local Testing)
 ```bash
 # Build images with updated dependencies
 docker compose build --pull --no-cache
